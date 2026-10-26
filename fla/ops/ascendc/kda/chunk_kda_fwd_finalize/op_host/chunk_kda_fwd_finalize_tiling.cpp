@@ -360,6 +360,8 @@ ge::graphStatus Tiling4ChunkKdaFwdFinalize(gert::TilingContext *context)
     tiling.set_isVarLen(isVarLen);
     tiling.set_outputSequenceMajor(info.sequenceMajor);
     tiling.set_stateVFirst(*stateVFirst);
+    // Phase 3（方案 B）：A6 用 AIC_ONLY（mover=0，天然 1:1）。故 isA5 只对 A5 成立，
+    // A6 不再判成 A5，mover 路径不启用；kernel 侧由 tiling_key 模板落到 AIC_ONLY。
     const bool isA5 =
         platform.GetSocVersion() == platform_ascendc::SocVersion::ASCEND950;
     const uint64_t minimumChunksPerCore =

@@ -10,7 +10,8 @@
 #pragma once
 
 #ifndef CATLASS_ARCH
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
 #define CATLASS_ARCH 3510
 #else
 #define CATLASS_ARCH 2201
@@ -30,7 +31,8 @@
 #include "catlass/layout/layout.hpp"
 #include "kernel_operator.h"
 #include "../chunk_kda_fwd_varlen.h"
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
 #ifndef FLA_NPU_REGBASE_HPP_INCLUDED
 #define FLA_NPU_REGBASE_HPP_INCLUDED
 #include "kernel_utils/vector/regbase.hpp"
@@ -136,7 +138,8 @@ constexpr uint16_t KDA_ARCH35_SCORE_EVENT = 3;
 constexpr uint16_t KDA_ARCH35_SCORE_W_EVENT = 4;
 constexpr uint16_t KDA_ARCH35_SOLVE_FIX_EVENT = 7;
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
 template <bool HAS_BIAS>
 static __simd_vf__ inline void AccumulateRawSafeGateChunk128Regbase(
     __ubuf__ float *input, __ubuf__ float *bias, __ubuf__ float *acc,
@@ -763,7 +766,8 @@ static __simd_vf__ inline void ApplyKdaRowScaleRegbase(
 }
 #endif
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
 using KdaArchTag = Catlass::Arch::Ascend950;
 #else
 using KdaArchTag = Catlass::Arch::AtlasA2;
@@ -915,10 +919,18 @@ public:
         lowerBound_ = tiling.lowerBound;
         storeQG_ = storeQG;
         usedCoreNum_ = tiling.prepareUsedCoreNum;
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE && !IsSameType<T, float>::value) {
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+            // A6 1:1 只有单个 AIV，head-pair 依赖 AIV0+AIV1 双 subblock 分头，
+            // 在 1:1 下会漏掉奇数 head 且触发 direct-score +16 flag 握手死锁，
+            // 故强制走 generic 单 AIV 串行路径（row 全量下沉到唯一 AIV）。
+            headPairMode_ = false;
+#else
             headPairMode_ = KDA_ARCH35_ENABLE_HEAD_PAIR &&
                 HV_ % KDA_SCORE_LANES == 0;
+#endif
         }
 #endif
         constexpr uint64_t solvePipelineDepth = SAFE_GATE ? KDA_SOLVE_PIPELINE_DEPTH : 1;
@@ -1228,7 +1240,8 @@ private:
             static_cast<uint64_t>(KDA_VEC_ARENA_ELEMENTS) * sizeof(float) + EXP2_UB_BYTES;
         constexpr uint64_t availableBytes = KDA_AIV_UB_BUDGET_BYTES - fixedBytes;
         uint64_t bytesPerRow = K_ * KDA_GATE_PIPELINE_DEPTH * (3 * sizeof(T) + sizeof(GK_T));
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128) {
             bytesPerRow = GateBufferDepth() *
                           (K_ * (4 * sizeof(T) + sizeof(GK_T)) + sizeof(BETA_T));
@@ -1240,7 +1253,8 @@ private:
 
     __aicore__ inline constexpr uint64_t GateBufferDepth() const
     {
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128) {
             return 2;
         }
@@ -1250,7 +1264,8 @@ private:
 
     __aicore__ inline uint64_t GateInputSlotBytes() const
     {
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128) {
             return GateStageElems() * (3 * sizeof(T) + sizeof(GK_T)) +
                    GatePipelineRows() * sizeof(BETA_T);
@@ -1341,7 +1356,8 @@ private:
         if (!computeGateInPrepare_) {
             CopyVectorIn(gateTyped, gk_, KVOffset(b, hv, token, 0, K_), elems);
         }
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128) {
             LocalTensor<T> vTyped = GateVTyped(slot);
             LocalTensor<BETA_T> betaTyped = GateBetaTyped(slot);
@@ -1385,7 +1401,8 @@ private:
     __aicore__ inline void MaterializeRawGateChunkArch35(
         uint64_t b, uint64_t hv, uint64_t start, uint64_t rows)
     {
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if (!computeGateInPrepare_) {
             return;
         }
@@ -1630,7 +1647,8 @@ private:
                                                     uint64_t finalRefToken, uint64_t scoreSlot)
     {
         const bool useDirectScoreL1 =
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             KDA_ARCH35_ENABLE_DIRECT_SCORE_L1 && KDA_ARCH35_ENABLE_DIRECT_SCORE_UB &&
             SAFE_GATE && BT_ == 64 && K_ == 128 && V_ == 128 &&
             subBlockNum == 1 && scoreRowCount == KDA_DIRECT_SCORE_ROWS &&
@@ -1640,7 +1658,8 @@ private:
 #endif
         LocalTensor<float> refFp32 = exp2Buf_.Get<float>();
         LoadGateScoreRef(refFp32, b, hv, refToken);
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         constexpr bool exportFinalKg =
             SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128;
         LocalTensor<float> finalRefFp32 = exp2Buf_.Get<float>()[K_];
@@ -1672,7 +1691,8 @@ private:
             LocalTensor<SCORE_T> qScore = qTyped.template ReinterpretCast<SCORE_T>();
             LocalTensor<SCORE_T> kScore = kTyped.template ReinterpretCast<SCORE_T>();
             LocalTensor<GK_T> gateTyped = GateScoreTyped(qwSlot, tileRow);
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             LocalTensor<SCORE_T> kgScore =
                 GateKgTyped(qwSlot).template ReinterpretCast<SCORE_T>();
             LocalTensor<T> vTyped = GateVTyped(qwSlot);
@@ -1701,7 +1721,8 @@ private:
                 Cast(gFp32, gateTyped, RoundMode::CAST_NONE, static_cast<uint32_t>(elems));
             }
 #endif
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             if constexpr (IsSameType<BETA_T, float>::value) {
                 Adds(betaFp32, betaTyped, 0.0f, static_cast<uint32_t>(tileRows));
             } else {
@@ -1720,7 +1741,8 @@ private:
                 }
                 PrefetchQKGate(qwSlot ^ 1, b, h, hv, start + nextTileRow, nextRows * K_);
             }
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             bool fuseQwKg = SAFE_GATE && BT_ == 64 && K_ == 128 && V_ == 128 && subBlockNum == 1;
             if (fuseQwKg) {
                 PrepareKdaGateQwKgRegbase<T, SCORE_T, GK_T, true, true, false, true>(
@@ -1839,7 +1861,8 @@ private:
                               ScoreScratchOffset(scoreSlot, KDA_SCORE_SCRATCH_W, tileRow),
                               kScore, elems);
             }
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             if (fuseQwKg) {
                 CopyVectorOut(scoreWorkspace_, ScoreScratchOffset(scoreSlot, KDA_SCORE_SCRATCH_KG, tileRow),
                               kgScore, elems);
@@ -1862,7 +1885,8 @@ private:
         }
 
         bool fuseQwKg = false;
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         fuseQwKg = SAFE_GATE && BT_ == 64 && K_ == 128 && V_ == 128 && subBlockNum == 1;
 #endif
         uint64_t kgRows = fuseQwKg ? scoreRowBegin : validColEnd;
@@ -1915,7 +1939,8 @@ private:
                 }
                 PrefetchKGate(kgSlot ^ 1, b, h, hv, start + nextTileRow, nextRows * K_);
             }
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             PrepareKdaGateKgRegbase<T, SCORE_T, GK_T, true>(
                 (__ubuf__ SCORE_T *)reinterpret_cast<uint64_t>(kgScore.GetPhyAddr()),
                 (__ubuf__ T *)reinterpret_cast<uint64_t>(kTyped.GetPhyAddr()),
@@ -1983,7 +2008,8 @@ private:
         if (useRef) {
             LoadGateScoreRef(refFp32, b, hv, refToken);
         }
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         const bool fuseScoreWriteback =
             writeScoreScratch && useRef && K_ * 2 <= EXP2_UB_ELEMENTS;
 #endif
@@ -2035,7 +2061,8 @@ private:
                 Cast(gFp32, gateTyped, RoundMode::CAST_NONE, static_cast<uint32_t>(elems));
             }
 #endif
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             if constexpr (IsSameType<BETA_T, float>::value) {
                 Adds(betaFp32, betaTyped, 0.0f, static_cast<uint32_t>(tileRows));
             } else {
@@ -2044,7 +2071,8 @@ private:
             PipeBarrier<PIPE_V>();
 #endif
             uint64_t nextTileRow = tileRow + maxRows;
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             uint64_t nextGateSlot = (gateSlot + 1) % KDA_GATE_PIPELINE_DEPTH;
             if (nextTileRow < rowEnd) {
                 uint64_t tileIndex = (tileRow - rowBegin) / maxRows;
@@ -2069,7 +2097,8 @@ private:
                 PrefetchQKGate(gateSlot ^ 1, b, h, hv, start + nextTileRow, nextRows * K_);
             }
 #endif
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             uint16_t validRows = static_cast<uint16_t>(tileRows);
             if (useRef && tileRow >= validColEnd) {
                 validRows = 0;
@@ -2227,7 +2256,8 @@ private:
                               wScore, elems);
                 CopyVectorOut(scoreWorkspace_, ScoreScratchOffset(scoreSlot, KDA_SCORE_SCRATCH_KG, tileRow),
                               kgScore, elems);
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
                 if (fuseScoreWriteback) {
                     StorePreparedQG(b, hv, token, directQ, elems);
                     CopyVectorOut(w_, KVOffset(b, hv, token, 0, K_), directW, elems);
@@ -2239,19 +2269,22 @@ private:
                 CopyVectorOut(w_, KVOffset(b, hv, token, 0, K_), kTyped, elems);
                 CopyVectorOut(kg_, KVOffset(b, hv, token, 0, K_), kgTyped, elems);
             }
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             SignalGateOutputDoneForMte2(gateSlot);
 #else
             SignalGateOutputDone();
 #endif
             outputPending = true;
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             gateSlot = (gateSlot + 1) % KDA_GATE_PIPELINE_DEPTH;
 #else
             gateSlot ^= 1;
 #endif
         }
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         uint64_t tileCount = (rowEnd - rowBegin + maxRows - 1) / maxRows;
         uint64_t firstPending =
             tileCount > KDA_GATE_PIPELINE_DEPTH ? tileCount - KDA_GATE_PIPELINE_DEPTH : 0;
@@ -2327,7 +2360,8 @@ private:
         if (validColEnd == 0 || validColEnd > curT) {
             validColEnd = curT;
         }
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if (writeScoreScratch && curT == BT_ && scoreRowBegin == 0 &&
             scoreRowCount == curT && validColEnd == curT) {
             PrepareGateProductsBulk(b, h, hv, start, curT, subBlockIdx, subBlockNum, useRef, refToken,
@@ -2354,7 +2388,8 @@ private:
         ComputeRawAqkAkkCubeBlock(b, hv, chunkIdx, start, curT, 0, curT);
     }
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
     template <uint32_t N>
     __aicore__ inline void ComputeRawAqkAkkCubeStableBlockDirectUbArch35(
         uint64_t b, uint64_t hv, uint64_t start, uint64_t rowBegin,
@@ -2855,7 +2890,8 @@ private:
         if (colCount == 0 || colCount > curT) {
             colCount = curT;
         }
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128) {
             if (KDA_ARCH35_ENABLE_MANUAL_SCORE_PIPELINE && fusePostWu_ &&
                 rowBegin == 0 && rowCount == 64 && colCount == 64) {
@@ -2955,7 +2991,8 @@ private:
         constexpr uint32_t diagSize = KDA_SOLVE_DIAG_BT;
         constexpr uint8_t rowBlk = diagSize * sizeof(float) / 32;
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 &&
                       COMPILE_V == 128) {
             ForwardSubDiag16Regbase(
@@ -3026,7 +3063,8 @@ private:
         constexpr uint32_t diagElements = diagSize * diagSize;
         constexpr uint32_t brcbElements = diagSize * 8;
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 &&
                       COMPILE_V == 128) {
             (void)akkMat;
@@ -3135,7 +3173,8 @@ private:
     __aicore__ inline void SelectCausalRows(LocalTensor<float> aqkMat, LocalTensor<float> akkMat,
                                             uint64_t rowBegin, uint64_t rowCount)
     {
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128) {
             SelectCausalRows64Regbase(
                 (__ubuf__ float *)reinterpret_cast<uint64_t>(aqkMat.GetPhyAddr()),
@@ -3299,7 +3338,8 @@ private:
         rowEnd = (curT * (subBlockIdx + 1)) / subBlockNum;
     }
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
     __aicore__ inline void InitializeDirectScoreUbArch35()
     {
         for (uint32_t slot = 0; slot < KDA_DIRECT_SCORE_QUEUE_DEPTH; ++slot) {
@@ -3381,7 +3421,8 @@ private:
         uint64_t token = start + rowBegin;
 
         constexpr bool scoreCanIncludeBeta =
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128;
 #else
             false;
@@ -3416,7 +3457,8 @@ private:
             SetFlag<HardEvent::MTE2_V>(mte2ToVEvent_);
             WaitFlag<HardEvent::MTE2_V>(mte2ToVEvent_);
         }
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 &&
                       COMPILE_V == 128) {
             if (!scoreIncludesBeta) {
@@ -3464,7 +3506,8 @@ private:
 
         uint64_t xBase = SolveScratchOffset(b, hv, chunkIdx, KDA_SOLVE_SCRATCH_X) + rowBegin * BT_;
         uint64_t lBase = SolveScratchOffset(b, hv, chunkIdx, KDA_SOLVE_SCRATCH_Y0) + rowBegin * BT_;
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128) {
             LocalTensor<T> aqkTyped = GateQTyped(0);
             if (validElemCount > 0) {
@@ -3537,7 +3580,8 @@ private:
         auto blockC = GetTile(tensorLayoutC, tla::MakeCoord(rowC, colC), tla::MakeShape(shape.m(), shape.n()));
         BlockMmad blockMmad(resource);
         blockMmad(blockA, blockB, blockC, shape);
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         SetFlag<HardEvent::FIX_MTE2>(KDA_ARCH35_SOLVE_FIX_EVENT);
         WaitFlag<HardEvent::FIX_MTE2>(KDA_ARCH35_SOLVE_FIX_EVENT);
 #else
@@ -3742,7 +3786,8 @@ private:
         }
     }
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
     template <uint32_t TILE_SIZE, bool TRANSPOSE>
     __aicore__ inline void LoadSolveTile(LocalTensor<float> dst, LocalTensor<float> src)
     {
@@ -4017,7 +4062,8 @@ private:
 
     __aicore__ inline void ComputeAkkMergeCubeWorkspaceDispatch(uint64_t b, uint64_t hv, uint64_t chunkIdx)
     {
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128) {
             ComputeAkkMergeCubeWorkspace(b, hv, chunkIdx);
             return;
@@ -4095,7 +4141,8 @@ private:
             PipeBarrier<PIPE_V>();
         }
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 &&
                       COMPILE_V == 128) {
             ApplyKdaRowScaleRegbase(
@@ -4153,7 +4200,8 @@ private:
         LocalTensor<float> betaLocal = arena;
         LocalTensor<float> betaBrcb = arena[KDA_SOLVE_BT];
         LocalTensor<float> matrixLocal = arena[KDA_SOLVE_BT + 512];
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         // Keep each arch35 Cast/regbase panel within an 8K-element UB instruction span.
         constexpr uint64_t maxScaleElements = 8192;
         if (rowCount * K_ > maxScaleElements || rowCount * V_ > maxScaleElements) {
@@ -4186,7 +4234,8 @@ private:
                                                         uint64_t start, uint64_t curT,
                                                         uint64_t subBlockIdx, uint64_t subBlockNum)
     {
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         constexpr bool qgScaledAlreadyStored =
             SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128;
 #else
@@ -4218,7 +4267,8 @@ private:
             LocalTensor<T> akkTyped = typedBase[matrixElems];
             LocalTensor<T> qgTyped = typedBase[2 * matrixElems];
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128) {
                 const uint64_t xBase =
                     SolveScratchOffset(b, hv, chunkIdx, KDA_SOLVE_SCRATCH_X) + tileRow * BT_;
@@ -4237,7 +4287,8 @@ private:
             SetFlag<HardEvent::MTE2_V>(mte2ToVEvent_);
             WaitFlag<HardEvent::MTE2_V>(mte2ToVEvent_);
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128) {
                 // 该形态由 prepare 承担 post-Wu 的产出（融合路径），但状态更新消费的
                 // gated K 必须相对 chunk 末行：kg[row] = k[row] * 2^(gk_last - gk[row])。
@@ -4276,7 +4327,8 @@ private:
             }
 #endif
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             if constexpr (!(SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128)) {
                 Muls(aqkLocal, aqkLocal, scale_, static_cast<uint32_t>(matrixElems));
             }
@@ -4289,7 +4341,8 @@ private:
                 Muls(qgLocal, qgLocal, scale_, static_cast<uint32_t>(qgElems));
                 PipeBarrier<PIPE_V>();
             }
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             if constexpr (!(SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128)) {
                 ClampFp32ToOutputType(aqkLocal, static_cast<uint32_t>(matrixElems));
             }
@@ -4300,7 +4353,8 @@ private:
             if constexpr (!qgScaledAlreadyStored) {
                 ClampFp32ToOutputType(qgLocal, static_cast<uint32_t>(qgElems));
             }
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             if constexpr (!(SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128)) {
                 Cast(aqkTyped, aqkLocal, RoundMode::CAST_RINT, static_cast<uint32_t>(matrixElems));
             }
@@ -4315,7 +4369,8 @@ private:
 
             SetFlag<HardEvent::V_MTE3>(vToMte3Event_);
             WaitFlag<HardEvent::V_MTE3>(vToMte3Event_);
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             if constexpr (!(SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128)) {
                 CopyVectorOut(o_, AOffset(b, hv, start + tileRow, 0), aqkTyped, matrixElems);
             }
@@ -4373,7 +4428,8 @@ private:
     __aicore__ inline void JoinAivMte3()
     {
         if constexpr (CORE_TYPE == AscendC::AIV) {
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             if (!isAivOnly_) {
                 if (!headPairMode_) {
                     Catlass::Arch::CrossCoreBarrier<0x1, PIPE_MTE3>();
@@ -4463,7 +4519,8 @@ private:
         // direct-score 的初始 free flag。通用模板必须回落到逐 lane 的 cube
         // 计分路径，否则 AIC 会等待 AIV 从未发布过的 direct-score flag 而死锁。
         const bool useDirectScoreUb =
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128 &&
             KDA_ARCH35_ENABLE_DIRECT_SCORE_UB && pairHeads && curT == 64 &&
             scoreBlockCount == 2;
@@ -4496,7 +4553,8 @@ private:
                     }
                 }
                 Catlass::Arch::CrossCoreWaitFlagWithReverse<0x2, PIPE_MTE2>(scoreDoneFlag_);
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
                 if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128) {
                     if (useDirectScoreUb && useAkkCubeSolve && block == 1) {
                         ProcessDirectScoreSolveRowsArch35(
@@ -4517,7 +4575,8 @@ private:
             }
         }
         bool fusedScoreWriteback = false;
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         fusedScoreWriteback = SAFE_GATE && BT_ == 64 && K_ == 128 && V_ == 128;
 #endif
         if (!fusedScoreWriteback) {
@@ -4528,7 +4587,8 @@ private:
         if (pipelineBlockCount > 0) {
             Catlass::Arch::CrossCoreWaitFlagWithReverse<0x2, PIPE_MTE2>(scoreDoneFlag_);
         }
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if (useDirectScoreUb && useAkkCubeSolve) {
             ProcessDirectScoreSolveRowsArch35(
                 b, hv, chunkIdx, start, KDA_DIRECT_SCORE_ROWS, 1);
@@ -4566,7 +4626,8 @@ private:
                     return;
                 }
                 RunAicAfterBothAivReady(subBlockIdx, subBlockNum);
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
                 if constexpr (!(SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128)) {
                     StoreSolveXRowsToAkk(b, hv, chunkIdx, start, curT, solveRowBegin, solveRowEnd);
                 }
@@ -4591,7 +4652,8 @@ private:
             }
         }
         // Host validation guarantees every accepted shape has enough workspace for this cube path.
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128) {
             if (HV_ % KDA_SCORE_LANES != 0) {
                 PrepareWuCubeInputs(b, hv, start, curT, subBlockIdx, subBlockNum);
@@ -4613,14 +4675,16 @@ private:
         uint64_t solveRowBegin = 0;
         uint64_t solveRowEnd = 0;
         GetSolveRowRange(BT_, subBlockIdx, subBlockNum, solveRowBegin, solveRowEnd);
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (!(SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128)) {
             StoreSolveXRowsToAkk(b, hv, chunkIdx, start, curT, solveRowBegin, solveRowEnd);
         }
 #else
         StoreSolveXRowsToAkk(b, hv, chunkIdx, start, curT, solveRowBegin, solveRowEnd);
 #endif
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128) {
             if (HV_ % KDA_SCORE_LANES != 0) {
                 PrepareWuCubeInputs(b, hv, start, curT, subBlockIdx, subBlockNum);
@@ -4715,7 +4779,8 @@ private:
                 uint64_t queueSlot = useFullChunkScore
                     ? localTaskIdx % KDA_SCORE_QUEUE_DEPTH
                     : block % KDA_SCORE_QUEUE_DEPTH;
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
                 bool directScoreDispatched = false;
                 if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 &&
                               COMPILE_V == 128) {
@@ -4804,7 +4869,8 @@ private:
         uint64_t pendingSlot = 0;
         uint64_t localTaskIdx = 0;
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE && COMPILE_BT == 64 && COMPILE_K == 128 && COMPILE_V == 128) {
             if (KDA_ARCH35_ENABLE_DIRECT_SCORE_UB) {
                 InitializeDirectScoreUbArch35();
@@ -4951,7 +5017,8 @@ private:
         if constexpr (IsSameType<T, float>::value) {
             isAivOnly_ = true;
         }
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE && !IsSameType<T, float>::value) {
             if (headPairMode_ && !isAivOnly_) {
                 ProcessPreAivHeadPair();
@@ -5045,7 +5112,8 @@ private:
         if constexpr (IsSameType<T, float>::value) {
             return;
         }
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (SAFE_GATE) {
             if (headPairMode_) {
                 ProcessPreAicHeadPair();
@@ -5179,7 +5247,8 @@ __aicore__ inline void RunChunkKdaPrepare(
                 wSeed, akk, qg, qgScaled, uSeed, userWorkspace, finalKg,
                 prepareScratch, tiling, &pipe, false, storeQG);
         if (tiling.fusePostWu) {
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             KdaPostWu::ChunkKdaFwdPostWuKernel<T, GK_T, BETA_T> postWu;
             postWu.Init(nullptr, k, nullptr, gk, beta, initialState, cuSeqlens, chunkIndices,
                         wSeed, akk, uSeed, nullptr, userWorkspace, userWorkspace, userWorkspace,

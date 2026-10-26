@@ -8,7 +8,8 @@
 #pragma once
 
 #include "kernel_operator.h"
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
 #ifndef FLA_NPU_REGBASE_HPP_INCLUDED
 #define FLA_NPU_REGBASE_HPP_INCLUDED
 #include "kernel_utils/vector/regbase.hpp"
@@ -26,7 +27,8 @@ constexpr uint32_t GATE_BULK_ROWS = 64;
 constexpr uint32_t GATE_BULK_COLS = 128;
 constexpr uint32_t GATE_BULK_ELEMENTS = GATE_BULK_ROWS * GATE_BULK_COLS;
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
 static __simd_vf__ inline void AccumulateGateRowRegbase(__ubuf__ float *input, __ubuf__ float *acc,
                                                         __ubuf__ float *output, uint16_t count)
 {
@@ -496,7 +498,8 @@ private:
             }
         }
 #endif
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if constexpr (USE_GATE_IN_KERNEL && SAFE_GATE && IsSameType<T, float>::value) {
             if (k_ == GATE_BULK_COLS && chunkSize_ == GATE_BULK_ROWS) {
                 ProcessChunkBulkFp32Safe(b, hv, start, end);
@@ -541,7 +544,8 @@ private:
             LocalTensor<float> output =
                 outBuf_.Get<float>()[outputSlot * GATE_ROW_ELEMENTS];
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             if constexpr (!USE_GATE_IN_KERNEL && IsSameType<T, float>::value) {
                 if ((k_ % 128) == 0) {
                     LocalTensor<float> input = inBuf_.Get<float>()[slot * GATE_ROW_ELEMENTS];
@@ -660,7 +664,8 @@ private:
     }
 #endif
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
     __aicore__ inline void ProcessChunkBulkFp32Safe(uint64_t b, uint64_t hv, uint64_t start, uint64_t end)
     {
         uint64_t rows = end - start;

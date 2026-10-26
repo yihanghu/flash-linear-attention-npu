@@ -8,7 +8,8 @@
 #define CHUNK_KDA_FWD_FINALIZE_CUBE_H
 
 #include <type_traits>
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
 #ifndef CATLASS_ARCH
 #define CATLASS_ARCH 3510
 #endif
@@ -31,7 +32,8 @@ namespace KdaFinalize {
 
 using namespace AscendC;
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
 using FinalizeArch = Catlass::Arch::Ascend950;
 constexpr bool kFinalizeA5 = true;
 #else
@@ -57,7 +59,9 @@ class FinalizeCube {
     static constexpr uint32_t kL1HeadBytes = 72 * 1024;
     static constexpr uint32_t kL0AOffset[2] = {0, 16 * 1024};
     static constexpr uint32_t kL0BOffset[2] = {0, 32 * 1024};
-    static constexpr uint8_t kL0CMutexBase = 2;
+    // 1:1 下 L0C product 槽 2→4（P/R 各双缓冲，见 §9.3.3），输出槽互斥量 0..3 移到
+    // 6..9，避开 4/5 的 operand-plane 互斥量（ComputeProduct 用 4+operandPlane）。
+    static constexpr uint8_t kL0CMutexBase = 6;
 
 public:
     __aicore__ inline void Init(const FinalizeArgs &args)
@@ -69,7 +73,8 @@ public:
         v_.SetGlobalBuffer(reinterpret_cast<__gm__ Element *>(args.vNew));
         h_.SetGlobalBuffer(reinterpret_cast<__gm__ Element *>(args.h));
         out_.SetGlobalBuffer(reinterpret_cast<__gm__ Element *>(args.attnOut));
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         if ASCEND_IS_AIC {
             SetLoadDataPaddingValue<Element>(static_cast<Element>(0));
         }
@@ -98,7 +103,7 @@ public:
         const uint32_t workCount = balanceTail
             ? fullChunksPerCore + tailEnd - tailBegin : end - begin;
         uint32_t outputSlot = 0;
-        bool outputSlotUsed[2] = {false, false};
+        bool outputSlotUsed[4] = {false, false, false, false};
         for (uint32_t index = 0; index < workCount; ++index) {
             const uint32_t work = begin + index;
             uint32_t chunkId = work / partitions;
@@ -131,14 +136,15 @@ public:
                 for (uint32_t localHead = 0; localHead < active; ++localHead) {
                     StageC0(chunk, group + localHead, localHead, outputSlot);
                     outputSlotUsed[outputSlot] = true;
-                    outputSlot ^= 1;
+                    outputSlot = (outputSlot + 1) & 3;
                 }
             }
         }
         if constexpr (kFinalizeA5) {
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             // 最后一轮 Fixpipe 没有后继 MMAD 消费互斥量，在 M pipe 侧等待写回完成。
-            for (uint32_t slot = 0; slot < 2; ++slot) {
+            for (uint32_t slot = 0; slot < 4; ++slot) {
                 if (outputSlotUsed[slot]) {
                     const uint8_t mutexId = static_cast<uint8_t>(kL0CMutexBase + slot);
                     Mutex::Lock<PIPE_M>(mutexId);
@@ -215,7 +221,8 @@ private:
                                         Catlass::Arch::PositionL1{});
         auto l1BTensor = tla::MakeTensor(l1B, tla::MakeLayout<Element, L1B>(bRows, n),
                                         Catlass::Arch::PositionL1{});
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         Mutex::Lock<PIPE_MTE1>(static_cast<uint8_t>(4 + operandPlane));
 #endif
         auto l0A = resource_.l0ABuf.template GetBufferByByte<Element>(kL0AOffset[operandPlane]);
@@ -230,7 +237,8 @@ private:
                                         Catlass::Arch::PositionL0B{});
         auto tensorL0C = tla::MakeTensor(l0C, tla::MakeLayoutL0C(m, n),
                                         Catlass::Arch::PositionL0C{});
-#if !(defined(__CCE_AICORE__) && __CCE_AICORE__ == 310)
+#if !((defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201))
         if (l0OperandInFlight_[operandPlane]) {
             WaitFlag<HardEvent::M_MTE1>(operandPlane);
         }
@@ -241,7 +249,8 @@ private:
         auto tileL0B = GetTile(tensorL0B, tla::MakeCoord(0, 0), tla::MakeShape(k, n));
         CopyA{}(tileL0A, tileL1A);
         CopyB{}(tileL0B, tileL1B);
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         Mutex::Unlock<PIPE_MTE1>(static_cast<uint8_t>(4 + operandPlane));
         Mutex::Lock<PIPE_M>(static_cast<uint8_t>(4 + operandPlane));
 #else
@@ -254,7 +263,8 @@ private:
         // A2/A3 的 MMAD 至少处理一个 16 行分形，尾块仍只写回有效行。
         const uint32_t madM = kFinalizeA5 ? m : (m < 16 ? 16 : m);
         Mmad{}(tileL0C, tileL0A, tileL0B, madM, n, k, InitC, 0);
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         Mutex::Unlock<PIPE_M>(static_cast<uint8_t>(4 + operandPlane));
 #else
         SetFlag<HardEvent::M_MTE1>(operandPlane);
@@ -267,7 +277,8 @@ private:
     {
         auto l0C = resource_.l0CBuf.template GetBufferByByte<float>(
             outputSlot * Shape::kProductBytes);
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         Mutex::Lock<PIPE_FIX>(static_cast<uint8_t>(kL0CMutexBase + outputSlot));
 #else
         WaitFlag<HardEvent::M_FIX>(outputSlot);
@@ -282,7 +293,8 @@ private:
         fix.quantPre = QuantMode_t::F322BF16;
         Fixpipe<Element, float, CFG_ROW_MAJOR>(
             out_[OutputOffset(args_, chunk, head, 0)], l0C, fix);
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         Mutex::Unlock<PIPE_FIX>(static_cast<uint8_t>(kL0CMutexBase + outputSlot));
 #else
         SetFlag<HardEvent::FIX_M>(outputSlot);
@@ -299,7 +311,8 @@ private:
             const uint64_t qOffset = InputOffset(args_, chunk, head, Shape::kHeadDim);
             const uint64_t aOffset = InputOffset(args_, chunk, head, Shape::kChunkRows);
             const uint64_t hOffset = StateOffset(args_, chunk, head);
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             Mutex::Lock<PIPE_MTE2>(0);
 #endif
             LoadOperands<TileCopyQH, HLayout>(
@@ -310,7 +323,8 @@ private:
                 a_, v_, aOffset, qOffset, lane + kAOffset, lane + kVOffset,
                 chunk.validRows, chunk.validRows, Shape::kChunkRows,
                 Shape::kChunkRows, Shape::kHeadDim);
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             Mutex::Unlock<PIPE_MTE2>(0);
             Mutex::Lock<PIPE_MTE1>(0);
 #else
@@ -322,7 +336,8 @@ private:
             }
 #endif
         } else {
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             // Q/H 先 ready，第一路 MTE1/MMAD 可与 AIV 的 Aqk/V 搬运重叠。
             CrossCoreWaitFlag<A5Sync::kCrossCoreMode, PIPE_MTE1>(
                 A5Sync::kAicQhReadyFlagId[localHead]);
@@ -330,7 +345,8 @@ private:
 #endif
         }
         // 第一项初始化 L0C，第二项直接累加；两个槽仅用于跨 head 的 MMAD/Fixpipe 流水。
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         Mutex::Lock<PIPE_M>(static_cast<uint8_t>(kL0CMutexBase + outputSlot));
 #endif
         ComputeProduct<TileCopyQH, true>(lane + kQOffset, lane + kHOffset,
@@ -338,7 +354,8 @@ private:
                                          Shape::kHeadDim, Shape::kHeadDim,
                                          Shape::kHeadDim, 0, outputSlot);
         if constexpr (UseAivInputMover) {
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
             CrossCoreWaitFlag<A5Sync::kCrossCoreMode, PIPE_MTE1>(
                 A5Sync::kAicAvReadyFlagId[localHead]);
 #endif
@@ -347,7 +364,8 @@ private:
                                           chunk.validRows, chunk.validRows,
                                           Shape::kChunkRows, Shape::kChunkRows,
                                           Shape::kHeadDim, 1, outputSlot);
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         Mutex::Unlock<PIPE_MTE1>(0);
         if constexpr (UseAivInputMover) {
             // Q/H 与 Aqk/V 均已离开 L1，AIV 可提前复用该 head 槽。

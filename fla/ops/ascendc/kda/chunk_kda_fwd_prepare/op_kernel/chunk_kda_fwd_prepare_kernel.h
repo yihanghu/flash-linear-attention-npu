@@ -13,7 +13,8 @@
 #include "chunk_kda_fwd_prepare_policy.h"
 #include "chunk_kda_fwd_prepare_struct.h"
 
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
 #include "arch35/chunk_kda_fwd_prepare_cube.h"
 #include "arch35/chunk_kda_fwd_prepare_vec.h"
 #else
@@ -40,7 +41,8 @@ template <typename GateT, typename BetaT, typename CompilePolicy>
 __aicore__ inline void RunPrepare(const PrepareKernelArgs &args)
 {
     if ASCEND_IS_AIV {
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         Arch35::ChunkKdaFwdPrepareVec<GateT, BetaT, CompilePolicy> vec;
         vec.Init(args);
 #else
@@ -52,7 +54,8 @@ __aicore__ inline void RunPrepare(const PrepareKernelArgs &args)
     }
 
     if ASCEND_IS_AIC {
-#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
+#if (defined(__CCE_AICORE__) && __CCE_AICORE__ == 310) || \
+    (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         Arch35::ChunkKdaFwdPrepareCube<CompilePolicy> cube;
         cube.Init(args);
 #else

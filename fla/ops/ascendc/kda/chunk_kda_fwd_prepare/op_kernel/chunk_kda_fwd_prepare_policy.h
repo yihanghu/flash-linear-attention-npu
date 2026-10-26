@@ -123,7 +123,22 @@ constexpr uint32_t kValueDim = 128;
 constexpr uint32_t kSubChunkRows = 16;
 constexpr uint32_t kSubChunkCount = 4;
 constexpr uint32_t kHeadsPerGroup = 4;
-constexpr uint32_t kAivPerAic = 2;
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+constexpr uint32_t kAivPerAic = 1; // A6：AIC:AIV = 1:1
+#else
+constexpr uint32_t kAivPerAic = 2; // A5：AIC:AIV = 1:2
+#endif
+// 每组内单个 AIV 负责的 head 数：1:2 下 2，1:1 下 4。
+constexpr uint32_t kHeadsPerAiv = kHeadsPerGroup / kAivPerAic;
+// 单个 AIV 的 UB 计算槽数：A6（1:1）triple buffer 3 槽，A5（1:2）ping-pong 2 槽。
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+constexpr uint32_t kComputeSlotCount = 3;
+#else
+constexpr uint32_t kComputeSlotCount = 2;
+#endif
+// 单个 AIV 按 wave 串行推进的波数：A6 4 head / 3 槽 = 2 波（[3,1]），A5 2 head / 2 槽 = 1 波。
+constexpr uint32_t kSlotWavesPerGroup =
+    (kHeadsPerAiv + kComputeSlotCount - 1) / kComputeSlotCount;
 constexpr uint32_t kBf16MatrixBytes = 0x4000;    // [64,128] * BF16
 constexpr uint32_t kGateMatrixBytes = 0x8000;    // [64,128] * FP32
 constexpr uint32_t kScoreMatrixBytes = 0x4000;   // [64,64] * FP32
@@ -193,11 +208,19 @@ constexpr uint32_t kPeak = 0x5C000;
 } // namespace L1
 
 namespace Arch35Ub {
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+constexpr uint32_t kCapacity = 0x5E000; // 376 KiB
+constexpr uint32_t kComputeSlotBytes = 0x1C000;
+constexpr uint32_t kStateBytes = 0x02800; // 10 KiB per head
+constexpr uint32_t kComputeSlotBase[3] = {0x00000, 0x1C000, 0x38000};
+constexpr uint32_t kStateBase[4] = {0x54000, 0x56800, 0x59000, 0x5B800};
+#else
 constexpr uint32_t kCapacity = 0x3E000; // 248 KiB
 constexpr uint32_t kComputeSlotBytes = 0x1C000;
 constexpr uint32_t kStateBytes = 0x03000;
 constexpr uint32_t kComputeSlotBase[2] = {0x00000, 0x1C000};
 constexpr uint32_t kStateBase[2] = {0x38000, 0x3B000};
+#endif
 
 // V0/V1 的主计算区。
 constexpr uint32_t kQ = 0x0000;

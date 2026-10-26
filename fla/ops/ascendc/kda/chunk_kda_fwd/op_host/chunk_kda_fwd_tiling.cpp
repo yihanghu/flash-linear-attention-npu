@@ -208,7 +208,8 @@ ge::graphStatus Tiling4ChunkKdaFwd(gert::TilingContext *context)
     const auto platform = platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
     const uint32_t blockDim = std::max<uint32_t>(platform.GetCoreNumAic(), 1);
     const bool isAscend950 =
-        platform.GetCurNpuArch() == NpuArch::DAV_3510;
+        platform.GetCurNpuArch() == NpuArch::DAV_3510 ||
+        platform.GetCurNpuArch() == NpuArch::DAV_9201;
     const bool useChunk64K128V128Template =
         chunkSize == 64 && shape.kDim == 128 && shape.vDim == 128;
     const auto arch35Options = arch35::ConfigureChunkKdaFwdArch35(
@@ -337,7 +338,9 @@ ge::graphStatus Tiling4ChunkKdaFwd(gert::TilingContext *context)
     tiling.set_stage(stage);
     tiling.set_gateDataType(gDesc->GetDataType() == ge::DT_FLOAT ? 2 :
         (gDesc->GetDataType() == ge::DT_BF16 ? 1 : 0));
-    tiling.set_gateUsedCoreNum(static_cast<int64_t>(blockDim) * 2);
+    // gate 跑在 AIV 上：A5 1:2 → 2*blockDim 个 AIV；A6 1:1 → blockDim 个 AIV。
+    tiling.set_gateUsedCoreNum(static_cast<int64_t>(blockDim) *
+        (platform.GetCurNpuArch() == NpuArch::DAV_9201 ? 1 : 2));
     tiling.set_prepareUsedCoreNum(blockDim);
     tiling.set_postWuUsedCoreNum(blockDim);
     tiling.set_outputUsedCoreNum(blockDim);

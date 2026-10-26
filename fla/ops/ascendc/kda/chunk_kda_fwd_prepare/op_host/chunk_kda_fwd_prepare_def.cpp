@@ -101,6 +101,8 @@ public:
         this->AICore().AddConfig("ascend910b", config);
         this->AICore().AddConfig("ascend910_93", config);
         this->AICore().AddConfig("ascend950", config);
+        // A6：Ascend960DT（dav-920r1 / __NPU_ARCH__ == 9201），soc 短名与 ops-transformer/ops-nn 保持一致
+        this->AICore().AddConfig("ascend960dt", config);
     }
 };
 

@@ -16,6 +16,11 @@ using namespace AscendC;
 constexpr uint64_t KDA_FWD_H_DIRECT_FREE_FLAG = 6;
 constexpr uint64_t KDA_FWD_H_DIRECT_READY_FLAG = 7;
 constexpr uint64_t KDA_FWD_H_SUBBLOCK_FLAG_OFFSET = 16;
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+// 1:1 下 AIV1 的 +16 子块偏移不再使用；mode4 空余 flag 8/15 供第二 DIRECT 槽。
+constexpr uint64_t KDA_FWD_H_DIRECT_FREE_FLAG1 = 8;
+constexpr uint64_t KDA_FWD_H_DIRECT_READY_FLAG1 = 15;
+#endif
 // Prepare is fully drained before FwdH starts. Keep FwdH mode-2 L1
 // traffic outside Matmul's possible 0..7 range and SyncAll's 11..14 range.
 constexpr uint64_t KDA_FWD_H_L1_FREE_FLAG = 9;
@@ -39,6 +44,22 @@ constexpr uint32_t KDA_FWD_H_SUB_CHUNK = KDA_FWD_H_CHUNK / 2;
 constexpr uint32_t KDA_FWD_H_SUB_DIM = KDA_FWD_H_DIM / 2;
 constexpr uint32_t KDA_FWD_H_STATE_SUB_ELEMS = KDA_FWD_H_SUB_DIM * KDA_FWD_H_DIM;
 constexpr uint32_t KDA_FWD_H_TOKEN_SUB_ELEMS = KDA_FWD_H_SUB_CHUNK * KDA_FWD_H_DIM;
+
+// A6（Ascend960DT，__NPU_ARCH__ == 9201）为 AIC:AIV = 1:1，单一 AIV 处理全 CHUNK/DIM；
+// A5（1:2）仍按 SUB_*（半量）拆给两个 AIV。
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+constexpr uint32_t KDA_FWD_H_AIV_CHUNK = KDA_FWD_H_CHUNK;
+constexpr uint32_t KDA_FWD_H_AIV_DIM = KDA_FWD_H_DIM;
+constexpr Catlass::Gemm::Tile::CopyL0CToUBMode KDA_FWD_H_DIRECT_COPY_MODE =
+    Catlass::Gemm::Tile::CopyL0CToUBMode::NO_SPLIT;
+#else
+constexpr uint32_t KDA_FWD_H_AIV_CHUNK = KDA_FWD_H_SUB_CHUNK;
+constexpr uint32_t KDA_FWD_H_AIV_DIM = KDA_FWD_H_SUB_DIM;
+constexpr Catlass::Gemm::Tile::CopyL0CToUBMode KDA_FWD_H_DIRECT_COPY_MODE =
+    Catlass::Gemm::Tile::CopyL0CToUBMode::SPLIT_M;
+#endif
+constexpr uint32_t KDA_FWD_H_STATE_AIV_ELEMS = KDA_FWD_H_AIV_DIM * KDA_FWD_H_DIM;
+constexpr uint32_t KDA_FWD_H_TOKEN_AIV_ELEMS = KDA_FWD_H_AIV_CHUNK * KDA_FWD_H_DIM;
 
 constexpr uint32_t KDA_FWD_H_L1_W_OFFSET = 0;
 constexpr uint32_t KDA_FWD_H_L1_Q_OFFSET = 16 * 1024;
@@ -71,6 +92,19 @@ constexpr uint32_t KDA_FWD_H_L0B_STATE_OFFSET = 0;
 constexpr uint32_t KDA_FWD_H_L0B_VNEW_OFFSET = 32 * 1024;
 constexpr uint32_t KDA_FWD_H_L0B_POST_OFFSET = 32 * 1024;
 
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+// 1:1 单一 AIV 下 state 占满 DIM×DIM（64KB）、direct 需 64KB（全 DIM×DIM vnew update）。
+// 极致流水（Step3）：DIRECT 双缓冲（credit 1→2），两个 64K 槽把 Fixpipe 直送与
+// ProcessChunk 的消费重叠，填掉 AIC 连续发布与 AIV 连续消费之间的回弹间隙。
+constexpr uint32_t KDA_FWD_H_UB_STATE_OFFSET = 0;
+constexpr uint32_t KDA_FWD_H_UB_STATE_TYPED_OFFSET = 64 * 1024;
+constexpr uint32_t KDA_FWD_H_UB_DIRECT_OFFSET = 96 * 1024;
+constexpr uint32_t KDA_FWD_H_UB_DIRECT1_OFFSET = 160 * 1024;
+constexpr uint32_t KDA_FWD_H_UB_OUT1_OFFSET = 224 * 1024;
+constexpr uint32_t KDA_FWD_H_UB_VNEW_OFFSET = 256 * 1024;
+constexpr uint32_t KDA_FWD_H_UB_IO_OFFSET = 288 * 1024;
+constexpr uint32_t KDA_FWD_H_UB_GATE_OFFSET = 320 * 1024;
+#else
 constexpr uint32_t KDA_FWD_H_UB_STATE_OFFSET = 0;
 constexpr uint32_t KDA_FWD_H_UB_STATE_TYPED_OFFSET = 32 * 1024;
 constexpr uint32_t KDA_FWD_H_UB_DIRECT_OFFSET = 48 * 1024;
@@ -78,6 +112,7 @@ constexpr uint32_t KDA_FWD_H_UB_OUT1_OFFSET = 80 * 1024;
 constexpr uint32_t KDA_FWD_H_UB_VNEW_OFFSET = 96 * 1024;
 constexpr uint32_t KDA_FWD_H_UB_IO_OFFSET = 112 * 1024;
 constexpr uint32_t KDA_FWD_H_UB_GATE_OFFSET = 128 * 1024;
+#endif
 
 template <typename T, typename GK_T, typename TilingData>
 class ChunkKdaFwdFwdH {
@@ -89,12 +124,12 @@ public:
         ArchTag, T, LayoutRM, T, LayoutRM, float, LayoutRM>;
     using DirectTileCopyRM = Common::Tile::PackedTileCopyTlaToUB<
         ArchTag, T, LayoutRM, T, LayoutRM, float, LayoutRM, void,
-        Catlass::Gemm::Tile::CopyL0CToUBMode::SPLIT_M>;
+        KDA_FWD_H_DIRECT_COPY_MODE>;
     using TileCopyCM = Catlass::Gemm::Tile::PackedTileCopyTla<
         ArchTag, T, LayoutCM, T, LayoutRM, float, LayoutRM>;
     using DirectTileCopyCM = Common::Tile::PackedTileCopyTlaToUB<
         ArchTag, T, LayoutCM, T, LayoutRM, float, LayoutRM, void,
-        Catlass::Gemm::Tile::CopyL0CToUBMode::SPLIT_M>;
+        KDA_FWD_H_DIRECT_COPY_MODE>;
 
     __aicore__ inline void Init(
         GM_ADDR gk, GM_ADDR initialState, GM_ADDR attnOut, GM_ADDR finalState,
@@ -167,28 +202,73 @@ private:
         CrossCoreWaitFlag(readyFlag);
     }
 
-    __aicore__ inline void WaitDirectFreeAic()
+    __aicore__ inline uint32_t DirectSlotBase(uint32_t slot) const
     {
-        CrossCoreWaitFlag<0x4, PIPE_FIX>(KDA_FWD_H_DIRECT_FREE_FLAG);
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+        return slot == 0 ? KDA_FWD_H_UB_DIRECT_OFFSET : KDA_FWD_H_UB_DIRECT1_OFFSET;
+#else
+        (void)slot;
+        return KDA_FWD_H_UB_DIRECT_OFFSET;
+#endif
+    }
+
+    __aicore__ inline uint64_t DirectFreeFlag(uint32_t slot) const
+    {
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+        return slot == 0 ? KDA_FWD_H_DIRECT_FREE_FLAG : KDA_FWD_H_DIRECT_FREE_FLAG1;
+#else
+        (void)slot;
+        return KDA_FWD_H_DIRECT_FREE_FLAG;
+#endif
+    }
+
+    __aicore__ inline uint64_t DirectReadyFlag(uint32_t slot) const
+    {
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+        return slot == 0 ? KDA_FWD_H_DIRECT_READY_FLAG : KDA_FWD_H_DIRECT_READY_FLAG1;
+#else
+        (void)slot;
+        return KDA_FWD_H_DIRECT_READY_FLAG;
+#endif
+    }
+
+    __aicore__ inline void WaitDirectFreeAic(uint32_t slot)
+    {
+        CrossCoreWaitFlag<0x4, PIPE_FIX>(DirectFreeFlag(slot));
+#if !(defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         CrossCoreWaitFlag<0x4, PIPE_FIX>(
             KDA_FWD_H_DIRECT_FREE_FLAG + KDA_FWD_H_SUBBLOCK_FLAG_OFFSET);
+#endif
     }
 
-    __aicore__ inline void SetDirectReadyAic()
+    __aicore__ inline void SetDirectReadyAic(uint32_t slot)
     {
-        CrossCoreSetFlag<0x4, PIPE_FIX>(KDA_FWD_H_DIRECT_READY_FLAG);
+        CrossCoreSetFlag<0x4, PIPE_FIX>(DirectReadyFlag(slot));
+#if !(defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
         CrossCoreSetFlag<0x4, PIPE_FIX>(
             KDA_FWD_H_DIRECT_READY_FLAG + KDA_FWD_H_SUBBLOCK_FLAG_OFFSET);
+#endif
     }
 
-    __aicore__ inline void WaitDirectReadyAiv()
+    __aicore__ inline void WaitDirectReadyAiv(uint32_t slot)
     {
-        CrossCoreWaitFlag<0x4, PIPE_V>(KDA_FWD_H_DIRECT_READY_FLAG);
+        CrossCoreWaitFlag<0x4, PIPE_V>(DirectReadyFlag(slot));
     }
 
-    __aicore__ inline void SetDirectFreeAiv()
+    __aicore__ inline void SetDirectFreeAiv(uint32_t slot)
     {
-        CrossCoreSetFlag<0x4, PIPE_V>(KDA_FWD_H_DIRECT_FREE_FLAG);
+        CrossCoreSetFlag<0x4, PIPE_V>(DirectFreeFlag(slot));
+    }
+
+    // AIV 侧：按 round-robin 取下一个 DIRECT 槽并重绑定 direct tensor，
+    // 返回本次使用的 slot 供对应的 SetDirectFreeAiv 复用。
+    __aicore__ inline uint32_t AcquireDirect(LocalTensor<float> &direct)
+    {
+        const uint32_t slot = directSeq_ & 1;
+        directSeq_ = (directSeq_ + 1) & 1;
+        WaitDirectReadyAiv(slot);
+        direct = resource_.ubBuf.template GetBufferByByte<float>(DirectSlotBase(slot));
+        return slot;
     }
 
     __aicore__ inline uint64_t MatrixOffset(uint64_t b, uint64_t hv, uint64_t t) const
@@ -303,19 +383,21 @@ private:
         TEventID mToFixEvent, TEventID fixToMEvent)
     {
         auto layoutUb = tla::MakeLayout<float, LayoutRM>(m, n);
+        const uint32_t slot = directSeq_ & 1;
         auto tensorUb = tla::MakeTensor(
-            resource_.ubBuf.template GetBufferByByte<float>(KDA_FWD_H_UB_DIRECT_OFFSET),
+            resource_.ubBuf.template GetBufferByByte<float>(DirectSlotBase(slot)),
             layoutUb, Catlass::Arch::PositionUB{});
         using CopyL0CToDst =
             typename DirectTileCopy::template CopyL0CToDst<decltype(tensorUb)>;
         CopyL0CToDst copyL0CToDst;
 
-        WaitDirectFreeAic();
+        WaitDirectFreeAic(slot);
         SetFlag<HardEvent::M_FIX>(mToFixEvent);
         WaitFlag<HardEvent::M_FIX>(mToFixEvent);
         copyL0CToDst(tensorUb, tensorL0C);
-        SetDirectReadyAic();
+        SetDirectReadyAic(slot);
         SetFlag<HardEvent::FIX_M>(fixToMEvent);
+        directSeq_ = (directSeq_ + 1) & 1;
     }
 
     template <typename DirectTileCopy>
@@ -705,7 +787,10 @@ private:
                 ComputeVnewProductsAic(
                     b, hv, chunk, chunk + 1 < totalChunks_);
             }
-            WaitDirectFreeAic();
+            WaitDirectFreeAic(0);
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+            WaitDirectFreeAic(1);
+#endif
         }
         WaitFlag<HardEvent::M_MTE1>(stateL0FreeEvent_);
         for (uint32_t slot = 0; slot < KDA_FWD_H_L1_STAGING_DEPTH; ++slot) {
@@ -732,11 +817,11 @@ private:
     {
         if (hasInitialState_) {
             DataCopy(state, initialState_[StateOffset(b, hv) + rowBegin * KDA_FWD_H_DIM],
-                     KDA_FWD_H_STATE_SUB_ELEMS);
+                     KDA_FWD_H_STATE_AIV_ELEMS);
             SetFlag<HardEvent::MTE2_V>(aivMte2ToVEvent_);
             WaitFlag<HardEvent::MTE2_V>(aivMte2ToVEvent_);
         } else {
-            Duplicate(state, 0.0f, KDA_FWD_H_STATE_SUB_ELEMS);
+            Duplicate(state, 0.0f, KDA_FWD_H_STATE_AIV_ELEMS);
             PipeBarrier<PIPE_V>();
         }
     }
@@ -746,12 +831,12 @@ private:
         LocalTensor<float> state, LocalTensor<T> stateTyped)
     {
         if (storeH_) {
-            Cast(stateTyped, state, RoundMode::CAST_RINT, KDA_FWD_H_STATE_SUB_ELEMS);
+            Cast(stateTyped, state, RoundMode::CAST_RINT, KDA_FWD_H_STATE_AIV_ELEMS);
             PipeBarrier<PIPE_V>();
             SetFlag<HardEvent::V_MTE3>(aivVToMte3Event_);
             WaitFlag<HardEvent::V_MTE3>(aivVToMte3Event_);
             DataCopy(h_[HOffset(b, hv, chunk) + rowBegin * KDA_FWD_H_DIM],
-                     stateTyped, KDA_FWD_H_STATE_SUB_ELEMS);
+                     stateTyped, KDA_FWD_H_STATE_AIV_ELEMS);
             SetFlag<HardEvent::MTE3_V>(aivMte3ToVEvent_);
             WaitFlag<HardEvent::MTE3_V>(aivMte3ToVEvent_);
         }
@@ -759,10 +844,10 @@ private:
         constexpr uint32_t columnGroup = 64;
         constexpr uint32_t columnGroups = KDA_FWD_H_DIM / columnGroup;
         for (uint32_t group = 0; group < columnGroups; ++group) {
-            Cast(stateTyped[group * KDA_FWD_H_SUB_DIM * columnGroup],
+            Cast(stateTyped[group * KDA_FWD_H_AIV_DIM * columnGroup],
                  state[group * columnGroup], RoundMode::CAST_RINT,
-                 columnGroup, KDA_FWD_H_SUB_DIM,
-                 {static_cast<uint16_t>(KDA_FWD_H_SUB_DIM), 1, 1,
+                 columnGroup, KDA_FWD_H_AIV_DIM,
+                 {static_cast<uint16_t>(KDA_FWD_H_AIV_DIM), 1, 1,
                   static_cast<uint8_t>(columnGroups * 8)});
         }
         PipeBarrier<PIPE_V>();
@@ -775,9 +860,9 @@ private:
             KDA_FWD_H_STATE_FREE_FLAG, statePublishCount_[subBlockIdx]);
         DataCopyParams stateCopyParams;
         stateCopyParams.blockCount = KDA_FWD_H_DIM / 16;
-        stateCopyParams.blockLen = KDA_FWD_H_SUB_DIM;
+        stateCopyParams.blockLen = KDA_FWD_H_AIV_DIM;
         stateCopyParams.srcGap = 0;
-        stateCopyParams.dstGap = KDA_FWD_H_DIM - KDA_FWD_H_SUB_DIM;
+        stateCopyParams.dstGap = KDA_FWD_H_DIM - KDA_FWD_H_AIV_DIM;
         DataCopy(l1State[rowBegin * 16], stateTyped, stateCopyParams);
         SetFlag<HardEvent::MTE3_V>(aivMte3ToVEvent_);
         WaitFlag<HardEvent::MTE3_V>(aivMte3ToVEvent_);
@@ -798,19 +883,19 @@ private:
         const uint32_t stateRowBegin = subBlockIdx * KDA_FWD_H_SUB_DIM;
         StoreCurrentStateAiv(b, hv, chunk, stateRowBegin, state, stateTyped);
 
-        WaitDirectReadyAiv();
+        uint32_t slot = AcquireDirect(direct);
         WaitFlag<HardEvent::MTE3_MTE2>(aivMte3ToMte2Event_);
         if (fusePostWuIntoFwdH_) {
-            Cast(ioTyped, direct, RoundMode::CAST_RINT, KDA_FWD_H_TOKEN_SUB_ELEMS);
+            Cast(ioTyped, direct, RoundMode::CAST_RINT, KDA_FWD_H_TOKEN_AIV_ELEMS);
             PipeBarrier<PIPE_V>();
-            SetDirectFreeAiv();
+            SetDirectFreeAiv(slot);
 
             SetFlag<HardEvent::V_MTE3>(aivVToMte3Event_);
             WaitFlag<HardEvent::V_MTE3>(aivVToMte3Event_);
             LocalTensor<T> l1W = resource_.l1Buf.template GetBufferByByte<T>(
                 L1WOffset(chunk & 3));
             DataCopyParams wCopyParams;
-            wCopyParams.blockCount = KDA_FWD_H_SUB_CHUNK;
+            wCopyParams.blockCount = KDA_FWD_H_AIV_CHUNK;
             wCopyParams.blockLen = 1;
             wCopyParams.srcGap = KDA_FWD_H_DIM / 16 - 1;
             wCopyParams.dstGap = 0;
@@ -823,31 +908,31 @@ private:
             WaitFlag<HardEvent::MTE3_V>(aivMte3ToVEvent_);
             SetL1SlotFlagAivToAic<PIPE_MTE3>(KDA_FWD_H_STATE_READY_FLAG);
 
-            WaitDirectReadyAiv();
-            Cast(ioTyped, direct, RoundMode::CAST_RINT, KDA_FWD_H_TOKEN_SUB_ELEMS);
+            slot = AcquireDirect(direct);
+            Cast(ioTyped, direct, RoundMode::CAST_RINT, KDA_FWD_H_TOKEN_AIV_ELEMS);
             PipeBarrier<PIPE_V>();
-            Cast(vnew, ioTyped, RoundMode::CAST_NONE, KDA_FWD_H_TOKEN_SUB_ELEMS);
+            Cast(vnew, ioTyped, RoundMode::CAST_NONE, KDA_FWD_H_TOKEN_AIV_ELEMS);
             PipeBarrier<PIPE_V>();
-            SetDirectFreeAiv();
-            WaitDirectReadyAiv();
+            SetDirectFreeAiv(slot);
+            slot = AcquireDirect(direct);
         } else {
             DataCopy(ioTyped, u_[ChunkMatrixOffset(b, hv, chunk, tokenBegin)],
-                     KDA_FWD_H_TOKEN_SUB_ELEMS);
+                     KDA_FWD_H_TOKEN_AIV_ELEMS);
             SetFlag<HardEvent::MTE2_V>(aivMte2ToVEvent_);
             WaitFlag<HardEvent::MTE2_V>(aivMte2ToVEvent_);
-            Cast(vnew, ioTyped, RoundMode::CAST_NONE, KDA_FWD_H_TOKEN_SUB_ELEMS);
+            Cast(vnew, ioTyped, RoundMode::CAST_NONE, KDA_FWD_H_TOKEN_AIV_ELEMS);
             PipeBarrier<PIPE_V>();
         }
-        Sub(vnew, vnew, direct, KDA_FWD_H_TOKEN_SUB_ELEMS);
+        Sub(vnew, vnew, direct, KDA_FWD_H_TOKEN_AIV_ELEMS);
         PipeBarrier<PIPE_V>();
-        SetDirectFreeAiv();
+        SetDirectFreeAiv(slot);
         if (storeVNew_) {
-            Cast(ioTyped, vnew, RoundMode::CAST_RINT, KDA_FWD_H_TOKEN_SUB_ELEMS);
+            Cast(ioTyped, vnew, RoundMode::CAST_RINT, KDA_FWD_H_TOKEN_AIV_ELEMS);
             PipeBarrier<PIPE_V>();
             SetFlag<HardEvent::V_MTE3>(aivVToMte3Event_);
             WaitFlag<HardEvent::V_MTE3>(aivVToMte3Event_);
             DataCopy(vNew_[VNewOffset(b, hv, chunk, tokenBegin)],
-                     ioTyped, KDA_FWD_H_TOKEN_SUB_ELEMS);
+                     ioTyped, KDA_FWD_H_TOKEN_AIV_ELEMS);
             SetFlag<HardEvent::MTE3_V>(aivMte3ToVEvent_);
             WaitFlag<HardEvent::MTE3_V>(aivMte3ToVEvent_);
         }
@@ -855,10 +940,10 @@ private:
         constexpr uint32_t columnGroup = 64;
         constexpr uint32_t columnGroups = KDA_FWD_H_DIM / columnGroup;
         for (uint32_t group = 0; group < columnGroups; ++group) {
-            Cast(ioTyped[group * KDA_FWD_H_SUB_CHUNK * columnGroup],
+            Cast(ioTyped[group * KDA_FWD_H_AIV_CHUNK * columnGroup],
                  vnew[group * columnGroup], RoundMode::CAST_RINT,
-                 columnGroup, KDA_FWD_H_SUB_CHUNK,
-                 {static_cast<uint16_t>(KDA_FWD_H_SUB_CHUNK), 1, 1,
+                 columnGroup, KDA_FWD_H_AIV_CHUNK,
+                 {static_cast<uint16_t>(KDA_FWD_H_AIV_CHUNK), 1, 1,
                   static_cast<uint8_t>(columnGroups * 8)});
         }
         PipeBarrier<PIPE_V>();
@@ -870,58 +955,64 @@ private:
             KDA_FWD_H_VNEW_FREE_FLAG, vnewPublishCount_[subBlockIdx]);
         DataCopyParams vnewL1CopyParams;
         vnewL1CopyParams.blockCount = KDA_FWD_H_DIM / 16;
-        vnewL1CopyParams.blockLen = KDA_FWD_H_SUB_CHUNK;
+        vnewL1CopyParams.blockLen = KDA_FWD_H_AIV_CHUNK;
         vnewL1CopyParams.srcGap = 0;
-        vnewL1CopyParams.dstGap = KDA_FWD_H_CHUNK - KDA_FWD_H_SUB_CHUNK;
+        vnewL1CopyParams.dstGap = KDA_FWD_H_CHUNK - KDA_FWD_H_AIV_CHUNK;
         DataCopy(l1Vnew[tokenBegin * 16], ioTyped, vnewL1CopyParams);
         SetFlag<HardEvent::MTE3_V>(aivMte3ToVEvent_);
         WaitFlag<HardEvent::MTE3_V>(aivMte3ToVEvent_);
         SetL1SlotFlagAivToAic<PIPE_MTE3>(KDA_FWD_H_VNEW_READY_FLAG);
         ++vnewPublishCount_[subBlockIdx];
 
-        WaitDirectReadyAiv();
-        Adds(out1, direct, 0.0f, KDA_FWD_H_TOKEN_SUB_ELEMS);
+        slot = AcquireDirect(direct);
+        Adds(out1, direct, 0.0f, KDA_FWD_H_TOKEN_AIV_ELEMS);
         PipeBarrier<PIPE_V>();
-        SetDirectFreeAiv();
+        SetDirectFreeAiv(slot);
 
-        WaitDirectReadyAiv();
+        slot = AcquireDirect(direct);
         DataCopy(gate, gk_[ChunkMatrixOffset(b, hv, chunk, KDA_FWD_H_CHUNK - 1) +
-                           stateRowBegin], KDA_FWD_H_SUB_DIM);
+                           stateRowBegin], KDA_FWD_H_AIV_DIM);
         SetFlag<HardEvent::MTE2_V>(aivMte2ToVEvent_);
         WaitFlag<HardEvent::MTE2_V>(aivMte2ToVEvent_);
-        Muls(gate, gate, 0.6931471805599453f, KDA_FWD_H_SUB_DIM);
+        Muls(gate, gate, 0.6931471805599453f, KDA_FWD_H_AIV_DIM);
         PipeBarrier<PIPE_V>();
-        Exp(gate, gate, KDA_FWD_H_SUB_DIM);
+        Exp(gate, gate, KDA_FWD_H_AIV_DIM);
         PipeBarrier<PIPE_V>();
         AscendC::VF_CALL<Catlass::Epilogue::Block::detail::ApplyKGateUpdateRegbaseDualIssue<float>>(
             reinterpret_cast<__ubuf__ float *>(direct.GetPhyAddr()),
             reinterpret_cast<__ubuf__ float *>(state.GetPhyAddr()),
             reinterpret_cast<__ubuf__ float *>(gate.GetPhyAddr()),
-            static_cast<uint16_t>(KDA_FWD_H_SUB_DIM),
+            static_cast<uint16_t>(KDA_FWD_H_AIV_DIM),
             static_cast<uint16_t>(KDA_FWD_H_DIM));
         PipeBarrier<PIPE_V>();
-        Adds(state, direct, 0.0f, KDA_FWD_H_STATE_SUB_ELEMS);
+        Adds(state, direct, 0.0f, KDA_FWD_H_STATE_AIV_ELEMS);
         PipeBarrier<PIPE_V>();
 
-        SetDirectFreeAiv();
-        WaitDirectReadyAiv();
-        Add(direct, direct, out1, KDA_FWD_H_TOKEN_SUB_ELEMS);
+        SetDirectFreeAiv(slot);
+        slot = AcquireDirect(direct);
+        Add(direct, direct, out1, KDA_FWD_H_TOKEN_AIV_ELEMS);
         PipeBarrier<PIPE_V>();
-        Cast(ioTyped, direct, RoundMode::CAST_RINT, KDA_FWD_H_TOKEN_SUB_ELEMS);
+        Cast(ioTyped, direct, RoundMode::CAST_RINT, KDA_FWD_H_TOKEN_AIV_ELEMS);
         PipeBarrier<PIPE_V>();
         SetFlag<HardEvent::V_MTE3>(aivVToMte3Event_);
         WaitFlag<HardEvent::V_MTE3>(aivVToMte3Event_);
         CopyOutputRows(
             b, hv, chunk * KDA_FWD_H_CHUNK + tokenBegin,
-            ioTyped, KDA_FWD_H_SUB_CHUNK);
-        SetDirectFreeAiv();
+            ioTyped, KDA_FWD_H_AIV_CHUNK);
+        SetDirectFreeAiv(slot);
         SetFlag<HardEvent::MTE3_MTE2>(aivMte3ToMte2Event_);
     }
 
     __aicore__ inline void ProcessAiv()
     {
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+        // 1:1 下单 AIV，subBlockIdx/subBlockNum 不依赖 GetSubBlockIdx 真机值。
+        const uint32_t subBlockIdx = 0;
+        const uint32_t subBlockNum = 1;
+#else
         const uint32_t subBlockIdx = static_cast<uint32_t>(GetSubBlockIdx());
         const uint32_t subBlockNum = static_cast<uint32_t>(GetSubBlockNum());
+#endif
         const uint64_t coreIdx = static_cast<uint64_t>(GetBlockIdx()) / subBlockNum;
         const uint64_t coreNum = coreNum_ == 0 ? 1 : coreNum_;
         LocalTensor<float> state =
@@ -945,7 +1036,10 @@ private:
             const uint64_t hv = task % heads_;
             const uint32_t stateRowBegin = subBlockIdx * KDA_FWD_H_SUB_DIM;
             InitializeStateAiv(b, hv, stateRowBegin, state);
-            SetDirectFreeAiv();
+            SetDirectFreeAiv(0);
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+            SetDirectFreeAiv(1);
+#endif
             for (uint32_t chunk = 0;
                  chunk < static_cast<uint32_t>(totalChunks_); ++chunk) {
                 ProcessChunkAiv(
@@ -957,7 +1051,7 @@ private:
                 WaitFlag<HardEvent::V_MTE3>(aivVToMte3Event_);
                 DataCopy(finalState_[StateOffset(b, hv) +
                          stateRowBegin * KDA_FWD_H_DIM],
-                         state, KDA_FWD_H_STATE_SUB_ELEMS);
+                         state, KDA_FWD_H_STATE_AIV_ELEMS);
                 SetFlag<HardEvent::MTE3_V>(aivMte3ToVEvent_);
                 WaitFlag<HardEvent::MTE3_V>(aivMte3ToVEvent_);
             }
@@ -980,6 +1074,7 @@ private:
     GlobalTensor<T> h_;
     uint32_t statePublishCount_[2] = {0, 0};
     uint32_t vnewPublishCount_[2] = {0, 0};
+    uint32_t directSeq_ = 0;
     TEventID aicMte2ToMte1Event_ = KDA_FWD_H_MTE_W_EVENT;
     TEventID aicL1ReuseEvents_[KDA_FWD_H_L1_STAGING_DEPTH] = {0, 1, 2, 3};
     TEventID stateL0FreeEvent_ = KDA_FWD_H_M_EVENT;

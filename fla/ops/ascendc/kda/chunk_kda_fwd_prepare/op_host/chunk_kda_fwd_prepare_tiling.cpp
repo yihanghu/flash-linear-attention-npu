@@ -553,7 +553,8 @@ ge::graphStatus Tiling4ChunkKdaFwdPrepare(gert::TilingContext *context)
         platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
     const uint64_t aicCoreNum = platform.GetCoreNumAic();
     const bool isAscend950 =
-        platform.GetCurNpuArch() == NpuArch::DAV_3510;
+        platform.GetCurNpuArch() == NpuArch::DAV_3510 ||
+        platform.GetCurNpuArch() == NpuArch::DAV_9201;
     ChunkKdaFwdPrepareScheduleContext scheduleContext;
     scheduleContext.batch = static_cast<uint64_t>(shape.batch);
     scheduleContext.qkHeadNum = static_cast<uint64_t>(shape.qkHeadNum);

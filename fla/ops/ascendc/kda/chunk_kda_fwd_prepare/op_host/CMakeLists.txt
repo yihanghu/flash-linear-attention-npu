@@ -18,6 +18,14 @@ add_ops_compile_options(
     OPTIONS --cce-auto-sync=off
             -Wno-deprecated-declarations
 )
+# A6（Ascend960DT）复用 arch35；按 ops-nn#11536 关闭 dcache flush
+if("${ASCEND_COMPUTE_UNIT}" STREQUAL "ascend960dt")
+    add_ops_compile_options(
+        OP_NAME ChunkKdaFwdPrepare
+        COMPUTE_UNIT Ascend960DT_968B7
+        OPTIONS --cce-no-dcache-flush
+    )
+endif()
 
 if(ENABLE_TEST)
     add_subdirectory(tests)

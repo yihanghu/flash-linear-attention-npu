@@ -139,6 +139,102 @@ private:
     __aicore__ inline void ProcessChunkHeadRange(
         const ChunkRange &chunk, uint32_t headBegin, uint32_t headEnd)
     {
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+        // A6（1:1）：只有一个 AIV，四个 local head 共享 AIV0 的三个本地
+        // ready 0/1/2、free 4/5/6。AIC 与 AIV 都按 head→slot 取模
+        // （slot=localHead%3）加 wave 锁步（[3,1]）串行推进，per-slot flag
+        // 严格配对。
+        constexpr uint16_t kAivToAicPayloadReadyFlagId[3] = {0, 1, 2};
+        constexpr uint16_t kAicToAivSlotReusableFlagId[3] = {4, 5, 6};
+        for (uint32_t groupBegin = headBegin; groupBegin < headEnd;) {
+            uint32_t activeHeads = headEnd - groupBegin;
+            if (activeHeads > Shape::kHeadsPerGroup) {
+                activeHeads = Shape::kHeadsPerGroup;
+            }
+            // free[slot] 初始只发布一次。以后每一波的 V0 会消费上一波
+            // C7 发布的 free，不能在组首重复 set 同一个计数器。
+            for (uint32_t slot = 0;
+                 slot < Shape::kComputeSlotCount; ++slot) {
+                if (freeInitialized_[slot]) {
+                    continue;
+                }
+                AscendC::CrossCoreSetFlag<0x4, PIPE_FIX>(
+                    kAicToAivSlotReusableFlagId[slot]);
+                freeInitialized_[slot] = true;
+            }
+
+            for (uint32_t wave = 0;
+                 wave < Shape::kSlotWavesPerGroup; ++wave) {
+                const uint32_t localHeadBase =
+                    wave * Shape::kComputeSlotCount;
+                if (localHeadBase >= activeHeads) {
+                    break;
+                }
+                uint32_t waveHeads = activeHeads - localHeadBase;
+                if (waveHeads > Shape::kComputeSlotCount) {
+                    waveHeads = Shape::kComputeSlotCount;
+                }
+                // C2：逐 HEAD 等 V1 的 72 KiB 分数操作数。一次装入 L1 后，
+                // 尾块只提交有效 sub-chunk 的 32x128 @ 128xN MMAD。
+                for (uint32_t k = 0; k < waveHeads; ++k) {
+                    const uint32_t localHead = localHeadBase + k;
+                    if (localHead >= activeHeads) {
+                        continue;
+                    }
+                    const uint32_t slot =
+                        localHead % Shape::kComputeSlotCount;
+                    AscendC::CrossCoreWaitFlag<0x4, PIPE_MTE2>(
+                        kAivToAicPayloadReadyFlagId[slot]);
+                    StageC2(chunk, localHead);
+                    AscendC::CrossCoreSetFlag<0x4, PIPE_FIX>(
+                        kAicToAivSlotReusableFlagId[slot]);
+                }
+
+                // 先为一波 HEAD 提交 C4，再统一提交 C5。若逐 HEAD 交替
+                // 提交 C4/C5，C5 的 MTE1 会等待同 HEAD 的 C4 Fixpipe 写完
+                // T，并阻塞另一 HEAD 的独立 C4；两轮提交允许下一 HEAD
+                // 的 MTE1/MMAD 与上一 HEAD 的 Fixpipe 排空重叠。
+                for (uint32_t k = 0; k < waveHeads; ++k) {
+                    const uint32_t localHead = localHeadBase + k;
+                    if (localHead >= activeHeads) {
+                        continue;
+                    }
+                    const uint32_t slot =
+                        localHead % Shape::kComputeSlotCount;
+                    AscendC::CrossCoreWaitFlag<0x4, PIPE_MTE2>(
+                        kAivToAicPayloadReadyFlagId[slot]);
+                    const uint32_t valueHead = groupBegin + localHead;
+                    StageC4(chunk, valueHead, localHead,
+                            kAicToAivSlotReusableFlagId[slot]);
+                }
+                for (uint32_t k = 0; k < waveHeads; ++k) {
+                    const uint32_t localHead = localHeadBase + k;
+                    if (localHead >= activeHeads) {
+                        continue;
+                    }
+                    const uint32_t valueHead = groupBegin + localHead;
+                    StageC5(chunk, valueHead, localHead);
+                }
+
+                // C7：V6 已将两个 RHS 平面写入 workspace。Akk 继续使用
+                // C4/C5 的 L1 常驻副本，分别计算 W 和 U，最后归还槽位。
+                for (uint32_t k = 0; k < waveHeads; ++k) {
+                    const uint32_t localHead = localHeadBase + k;
+                    if (localHead >= activeHeads) {
+                        continue;
+                    }
+                    const uint32_t slot =
+                        localHead % Shape::kComputeSlotCount;
+                    const uint32_t valueHead = groupBegin + localHead;
+                    AscendC::CrossCoreWaitFlag<0x4, PIPE_MTE2>(
+                        kAivToAicPayloadReadyFlagId[slot]);
+                    StageC7(chunk, valueHead, localHead,
+                            kAicToAivSlotReusableFlagId[slot]);
+                }
+            }
+            groupBegin += activeHeads;
+        }
+#else
         // AIC 视角下四个 local head 的固定核间编号。AIV1 的两个本地
         // ready 0/1、free 4/5 在 AIC 侧映射为 16/17、20/21。
         constexpr uint16_t kAivToAicPayloadReadyFlagId[4] = {
@@ -218,6 +314,7 @@ private:
             }
             groupBegin += activeHeads;
         }
+#endif
     }
 
     __aicore__ inline void StageC2(const ChunkRange &chunk,
@@ -229,8 +326,13 @@ private:
         const uint8_t l1Mutex = static_cast<uint8_t>(localHead); // 0..3
         const uint8_t operandMutex = 4;
         const uint8_t l0cMutex = static_cast<uint8_t>(5 + localHead); // 5..8
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+        // A6（1:1）：只有一个 AIV，Fixpipe 目标 sub-block 恒为 0。
+        const uint8_t ownerAiv = 0;
+#else
         const uint8_t ownerAiv = static_cast<uint8_t>(localHead / 2);
-        const uint32_t localSlot = localHead % 2;
+#endif
+        const uint32_t localSlot = localHead % Shape::kComputeSlotCount;
         const uint32_t l0cLane = localHead * 64 * 1024;
 
         AscendC::GlobalTensor<bfloat16_t> payload;

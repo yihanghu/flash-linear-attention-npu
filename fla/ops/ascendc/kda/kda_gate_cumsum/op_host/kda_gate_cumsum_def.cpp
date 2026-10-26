@@ -56,6 +56,8 @@ public:
         this->AICore().AddConfig("ascend910b", aicoreConfig);
         this->AICore().AddConfig("ascend910_93", aicoreConfig);
         this->AICore().AddConfig("ascend950", aicoreConfig);
+        // A6：Ascend960DT（dav-920r1 / __NPU_ARCH__ == 9201），纯 AIV 向量算子，仅补 soc 注册
+        this->AICore().AddConfig("ascend960dt", aicoreConfig);
     }
 };
 

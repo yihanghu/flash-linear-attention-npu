@@ -949,8 +949,9 @@ public:
             }
         }
         // 消费最后一次 C7 free，保证每次 set 都有对应 wait。
-        constexpr uint16_t kAicToAivSlotReusableFlagId[2] = {4, 5};
-        for (uint32_t localSlot = 0; localSlot < 2; ++localSlot) {
+        constexpr uint16_t kAicToAivSlotReusableFlagId[3] = {4, 5, 6};
+        for (uint32_t localSlot = 0;
+             localSlot < Shape::kComputeSlotCount; ++localSlot) {
             if (usedLocalSlot_[localSlot]) {
                 AscendC::CrossCoreWaitFlag<0x4, PIPE_MTE2>(
                     kAicToAivSlotReusableFlagId[localSlot]);
@@ -962,56 +963,80 @@ private:
     __aicore__ inline void ProcessChunkHeadRange(
         const ChunkRange &chunk, uint32_t headBegin, uint32_t headEnd)
     {
-        // 每个 AIV 都在自己的本地 flag 空间使用同一组固定编号：
-        // localSlot0/1 的 ready=0/1，free=4/5。AIV1 不能写 16/17/20/21。
-        constexpr uint16_t kAivToAicPayloadReadyFlagId[2] = {0, 1};
-        constexpr uint16_t kAicToAivSlotReusableFlagId[2] = {4, 5};
+        // 每个 AIV 都在自己的本地 flag 空间使用固定编号：
+        // slot 0/1/2 的 ready=0/1/2，free=4/5/6。AIV1 不能写 +16 偏移。
+        constexpr uint16_t kAivToAicPayloadReadyFlagId[3] = {0, 1, 2};
+        constexpr uint16_t kAicToAivSlotReusableFlagId[3] = {4, 5, 6};
         for (uint32_t groupBegin = headBegin; groupBegin < headEnd;) {
             uint32_t activeHeads = headEnd - groupBegin;
             if (activeHeads > Shape::kHeadsPerGroup) {
                 activeHeads = Shape::kHeadsPerGroup;
             }
-            for (uint32_t localSlot = 0; localSlot < 2; ++localSlot) {
-                const uint32_t localHead = aiv_ * 2 + localSlot;
-                if (localHead >= activeHeads) {
-                    continue;
+            // head→slot 取模 + wave 锁步：A6（1:1）3 槽 2 波（[3,1]），波 1
+            // 的 head3 复用 slot0，其 V0 消费波 0 head0 的 C7 free；A5（1:2）
+            // kComputeSlotCount==2 退化为原单批双槽。
+            for (uint32_t wave = 0;
+                 wave < Shape::kSlotWavesPerGroup; ++wave) {
+                const uint32_t localHeadBase =
+                    wave * Shape::kComputeSlotCount;
+                if (localHeadBase >= activeHeads) {
+                    break;
                 }
-                const uint32_t valueHead = groupBegin + localHead;
-                usedLocalSlot_[localSlot] = true;
-                // 初始 free 或上一组 C7 free；V0 首个消费者是 MTE2。
-                AscendC::CrossCoreWaitFlag<0x4, PIPE_MTE2>(
-                    kAicToAivSlotReusableFlagId[localSlot]);
-                StageV0(chunk, valueHead, localHead, localSlot);
-                StageV1(chunk, localHead, localSlot);
-                // V1 的 72 KiB score payload 已经写入 workspace。
-                AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(
-                    kAivToAicPayloadReadyFlagId[localSlot]);
-            }
-            for (uint32_t localSlot = 0; localSlot < 2; ++localSlot) {
-                const uint32_t localHead = aiv_ * 2 + localSlot;
-                if (localHead >= activeHeads) {
-                    continue;
+                uint32_t waveHeads = activeHeads - localHeadBase;
+                if (waveHeads > Shape::kComputeSlotCount) {
+                    waveHeads = Shape::kComputeSlotCount;
                 }
-                const uint32_t valueHead = groupBegin + localHead;
-                // C2 已写回 raw Aqk/Akk，且不再读取 V1 payload。
-                AscendC::CrossCoreWaitFlag<0x4, PIPE_V>(
-                    kAicToAivSlotReusableFlagId[localSlot]);
-                StageV3(chunk, valueHead, localHead, localSlot);
-                AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(
-                    kAivToAicPayloadReadyFlagId[localSlot]);
-            }
-            for (uint32_t localSlot = 0; localSlot < 2; ++localSlot) {
-                const uint32_t localHead = aiv_ * 2 + localSlot;
-                if (localHead >= activeHeads) {
-                    continue;
+                for (uint32_t k = 0; k < waveHeads; ++k) {
+                    const uint32_t localHead =
+                        aiv_ * Shape::kHeadsPerAiv + localHeadBase + k;
+                    if (localHead >= activeHeads) {
+                        continue;
+                    }
+                    const uint32_t slot =
+                        localHead % Shape::kComputeSlotCount;
+                    const uint32_t valueHead = groupBegin + localHead;
+                    usedLocalSlot_[slot] = true;
+                    // 初始 free 或上一波 C7 free；V0 首个消费者是 MTE2。
+                    AscendC::CrossCoreWaitFlag<0x4, PIPE_MTE2>(
+                        kAicToAivSlotReusableFlagId[slot]);
+                    StageV0(chunk, valueHead, localHead, slot);
+                    StageV1(chunk, localHead, slot);
+                    // V1 的 72 KiB score payload 已经写入 workspace。
+                    AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(
+                        kAivToAicPayloadReadyFlagId[slot]);
                 }
-                const uint32_t valueHead = groupBegin + localHead;
-                // C4 已一次性读完 B/X0/negX1/Akk，V6 可以原址换义。
-                AscendC::CrossCoreWaitFlag<0x4, PIPE_MTE2>(
-                    kAicToAivSlotReusableFlagId[localSlot]);
-                StageV6(chunk, valueHead, localHead, localSlot);
-                AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(
-                    kAivToAicPayloadReadyFlagId[localSlot]);
+                for (uint32_t k = 0; k < waveHeads; ++k) {
+                    const uint32_t localHead =
+                        aiv_ * Shape::kHeadsPerAiv + localHeadBase + k;
+                    if (localHead >= activeHeads) {
+                        continue;
+                    }
+                    const uint32_t slot =
+                        localHead % Shape::kComputeSlotCount;
+                    const uint32_t valueHead = groupBegin + localHead;
+                    // C2 已写回 raw Aqk/Akk，且不再读取 V1 payload。
+                    AscendC::CrossCoreWaitFlag<0x4, PIPE_V>(
+                        kAicToAivSlotReusableFlagId[slot]);
+                    StageV3(chunk, valueHead, localHead, slot);
+                    AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(
+                        kAivToAicPayloadReadyFlagId[slot]);
+                }
+                for (uint32_t k = 0; k < waveHeads; ++k) {
+                    const uint32_t localHead =
+                        aiv_ * Shape::kHeadsPerAiv + localHeadBase + k;
+                    if (localHead >= activeHeads) {
+                        continue;
+                    }
+                    const uint32_t slot =
+                        localHead % Shape::kComputeSlotCount;
+                    const uint32_t valueHead = groupBegin + localHead;
+                    // C4 已一次性读完 B/X0/negX1/Akk，V6 可以原址换义。
+                    AscendC::CrossCoreWaitFlag<0x4, PIPE_MTE2>(
+                        kAicToAivSlotReusableFlagId[slot]);
+                    StageV6(chunk, valueHead, localHead, slot);
+                    AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(
+                        kAivToAicPayloadReadyFlagId[slot]);
+                }
             }
             groupBegin += activeHeads;
         }
@@ -1022,9 +1047,13 @@ private:
                                     uint32_t localHead,
                                     uint32_t localSlot)
     {
-        const uint8_t mutex = static_cast<uint8_t>(localSlot); // slot0=0，slot1=1
+        const uint8_t mutex = static_cast<uint8_t>(localSlot); // mutex = slot
         const uint32_t computeSlot = Arch35Ub::kComputeSlotBase[localSlot];
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+        const uint32_t state = Arch35Ub::kStateBase[localHead]; // 4-head 常驻
+#else
         const uint32_t state = Arch35Ub::kStateBase[localSlot];
+#endif
         auto q = resource_.ubBuf.template GetBufferByByte<bfloat16_t>(
             computeSlot + Arch35Ub::kQ);
         auto k = resource_.ubBuf.template GetBufferByByte<bfloat16_t>(
@@ -1210,9 +1239,13 @@ private:
                                     uint32_t localHead,
                                     uint32_t localSlot)
     {
-        const uint8_t mutex = static_cast<uint8_t>(localSlot); // slot0=0，slot1=1
+        const uint8_t mutex = static_cast<uint8_t>(localSlot); // mutex = slot
         const uint32_t computeSlot = Arch35Ub::kComputeSlotBase[localSlot];
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+        const uint32_t state = Arch35Ub::kStateBase[localHead]; // 4-head 常驻
+#else
         const uint32_t state = Arch35Ub::kStateBase[localSlot];
+#endif
         auto qPlus = resource_.ubBuf.template GetBufferByByte<bfloat16_t>(
             computeSlot + Arch35Ub::kQ);
         auto kPlus = resource_.ubBuf.template GetBufferByByte<bfloat16_t>(
@@ -1255,9 +1288,13 @@ private:
                                     uint32_t localHead,
                                     uint32_t localSlot)
     {
-        const uint8_t mutex = static_cast<uint8_t>(localSlot); // slot0=0，slot1=1
+        const uint8_t mutex = static_cast<uint8_t>(localSlot); // mutex = slot
         const uint32_t computeSlot = Arch35Ub::kComputeSlotBase[localSlot];
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+        const uint32_t state = Arch35Ub::kStateBase[localHead]; // 4-head 常驻
+#else
         const uint32_t state = Arch35Ub::kStateBase[localSlot];
+#endif
         auto rawScore = resource_.ubBuf.template GetBufferByByte<float>(
             computeSlot + Arch35Ub::kRawScore);
         auto aqk = resource_.ubBuf.template GetBufferByByte<bfloat16_t>(
@@ -1343,9 +1380,13 @@ private:
                                     uint32_t localHead,
                                     uint32_t localSlot)
     {
-        const uint8_t mutex = static_cast<uint8_t>(localSlot); // slot0=0，slot1=1
+        const uint8_t mutex = static_cast<uint8_t>(localSlot); // mutex = slot
         const uint32_t computeSlot = Arch35Ub::kComputeSlotBase[localSlot];
+#if (defined(__NPU_ARCH__) && __NPU_ARCH__ == 9201)
+        const uint32_t state = Arch35Ub::kStateBase[localHead]; // 4-head 常驻
+#else
         const uint32_t state = Arch35Ub::kStateBase[localSlot];
+#endif
         auto qg = resource_.ubBuf.template GetBufferByByte<bfloat16_t>(
             computeSlot + Arch35Ub::kQg);
         auto kg = resource_.ubBuf.template GetBufferByByte<bfloat16_t>(
@@ -1441,7 +1482,7 @@ private:
     PrepareKernelArgs args_{};
     uint32_t workgroup_ = 0;
     uint32_t aiv_ = 0;
-    bool usedLocalSlot_[2] = {false, false};
+    bool usedLocalSlot_[3] = {false, false, false};
     Catlass::Arch::Resource<Catlass::Arch::Ascend950> resource_{};
     AscendC::GlobalTensor<bfloat16_t> qGm_{};
     AscendC::GlobalTensor<bfloat16_t> kGm_{};
